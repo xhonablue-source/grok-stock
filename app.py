@@ -5,9 +5,11 @@ from ta.trend import ADXIndicator
 from ta.momentum import RSIIndicator, StochasticOscillator
 from datetime import datetime
 import warnings
+import time
+import random
 warnings.filterwarnings('ignore')
 
-# 🚨 Day-Before Explosion Signal Scanner
+# 🚨 Day-Before Explosion Signal Scanner with Rate Limiting
 print("🚨 Day-Before Explosion Signal Scanner")
 print("=" * 50)
 
@@ -61,17 +63,29 @@ print(f"   • Volume > 2x 10-day average")
 print()
 
 scan_results = []
+failed_tickers = []
+rate_limit_delays = 0
 
 for i, ticker in enumerate(tickers):
     try:
         # Show progress every 50 tickers
         if i % 50 == 0:
-            print(f"Progress: {i}/{len(tickers)} ({i/len(tickers)*100:.1f}%)")
+            print(f"Progress: {i}/{len(tickers)} ({i/len(tickers)*100:.1f}%) | Found: {len(scan_results)} | Failed: {len(failed_tickers)}")
         
-        # Download 2 months of daily data (identical to Streamlit)
-        df = yf.download(ticker, period="2mo", interval="1d", progress=False)
+        # Rate limiting to avoid Yahoo Finance limits
+        if i > 0 and i % 20 == 0:  # Pause every 20 requests
+            delay = random.uniform(1, 3)  # Random delay 1-3 seconds
+            time.sleep(delay)
+            rate_limit_delays += 1
         
-        if len(df) < 20:  # Need enough data for indicators
+        # Additional delay for every request to be safer
+        time.sleep(random.uniform(0.1, 0.5))
+        
+        # Download 2 months of daily data with timeout
+        df = yf.download(ticker, period="2mo", interval="1d", progress=False, timeout=10)
+        
+        if df.empty or len(df) < 20:  # Need enough data for indicators
+            failed_tickers.append(f"{ticker} (insufficient data)")
             continue
         
         # Calculate technical indicators (IDENTICAL to Streamlit)
@@ -90,6 +104,12 @@ for i, ticker in enumerate(tickers):
         
         # Get yesterday's data (IDENTICAL logic)
         yesterday = df.iloc[-2]
+        
+        # Check if indicators are valid (not NaN)
+        required_indicators = ['Close', 'Volume', 'ADX', '+DI', '-DI', 'RSI', '%K', '%D', 'Vol10Avg']
+        if any(pd.isna(yesterday[indicator]) for indicator in required_indicators):
+            failed_tickers.append(f"{ticker} (invalid indicators)")
+            continue
         
         # IDENTICAL explosion criteria - Match specs seen in ABVX day prior
         if (
@@ -116,10 +136,19 @@ for i, ticker in enumerate(tickers):
                 "Vol10Avg": int(yesterday["Vol10Avg"]),
                 "Vol_Ratio": round(yesterday["Volume"] / yesterday["Vol10Avg"], 2),
             })
-            print(f"✅ EXPLOSION SETUP FOUND: {ticker}")
+            print(f"🚨 EXPLOSION SETUP FOUND: {ticker} @ ${yesterday['Close']:.2f}")
     
     except Exception as e:
-        # Skip problematic tickers silently (like Streamlit)
+        error_type = type(e).__name__
+        if "RateLimitError" in error_type or "Too Many Requests" in str(e):
+            print(f"⚠️ Rate limit hit at {ticker}, sleeping longer...")
+            time.sleep(random.uniform(5, 10))  # Longer sleep for rate limits
+            rate_limit_delays += 1
+            failed_tickers.append(f"{ticker} (rate limited)")
+        elif "PricesMissingError" in error_type or "delisted" in str(e):
+            failed_tickers.append(f"{ticker} (delisted/missing)")
+        else:
+            failed_tickers.append(f"{ticker} ({error_type})")
         continue
 
 print(f"\n🔍 Scan complete!")
@@ -142,9 +171,12 @@ if scan_results:
     
     # Summary statistics
     print(f"\n📈 Summary:")
-    print(f"   • Total scanned: {len(tickers)}")
+    print(f"   • Total tickers attempted: {len(tickers)}")
+    print(f"   • Successfully scanned: {len(tickers) - len(failed_tickers)}")
+    print(f"   • Failed/skipped: {len(failed_tickers)}")
+    print(f"   • Rate limit delays: {rate_limit_delays}")
     print(f"   • Explosion setups found: {len(results_df)}")
-    print(f"   • Success rate: {len(results_df)/len(tickers)*100:.3f}%")
+    print(f"   • Success rate: {len(results_df)/(len(tickers) - len(failed_tickers))*100:.3f}%")
     print(f"   • Average price: ${results_df['Price'].mean():.2f}")
     print(f"   • Average ADX: {results_df['ADX'].mean():.1f}")
     print(f"   • Average volume ratio: {results_df['Vol_Ratio'].mean():.1f}x")
@@ -152,8 +184,13 @@ if scan_results:
 else:
     print("🚫 No valid tickers matched the explosion preconditions.")
     print("💡 These are very strict criteria designed to catch rare setups.")
+    print(f"\n📊 Scan Statistics:")
+    print(f"   • Total tickers attempted: {len(tickers)}")
+    print(f"   • Successfully scanned: {len(tickers) - len(failed_tickers)}")
+    print(f"   • Failed/skipped: {len(failed_tickers)}")
+    print(f"   • Rate limit delays: {rate_limit_delays}")
 
 print(f"\n🚨 IMPORTANT: These are 'day-before explosion' signals.")
 print("📈 Stocks meeting these criteria may be positioned for significant moves.")
 print("⚠️ Always perform additional analysis before trading decisions.")
-  
+print(f"\n⏱️ Scan completed with {rate_limit_delays} rate limit delays to respect Yahoo Finance limits.")
